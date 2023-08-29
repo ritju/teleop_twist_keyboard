@@ -36,7 +36,7 @@ import sys
 import geometry_msgs.msg
 import rclpy
 import threading
-
+import time
 if sys.platform == 'win32':
     import msvcrt
 else:
@@ -153,8 +153,8 @@ def main():
     spinner = threading.Thread(target=rclpy.spin, args=(node,))
     spinner.start()
 
-    speed = 0.5
-    turn = 1.0
+    speed = 0.3
+    turn = 0.4
     x = 0.0
     y = 0.0
     z = 0.0
@@ -173,6 +173,7 @@ def main():
     try:
         print(msg)
         print(vels(speed, turn))
+        start = time.time()
         while True:
             key = getKey(settings)
             if key in moveBindings.keys():
@@ -196,16 +197,19 @@ def main():
                 if (key == '\x03'):
                     break
 
-            if stamped:
-                twist_msg.header.stamp = node.get_clock().now().to_msg()
+            if (time.time() - start > 0.09):
 
-            twist.linear.x = x * speed
-            twist.linear.y = y * speed
-            twist.linear.z = z * speed
-            twist.angular.x = 0.0
-            twist.angular.y = 0.0
-            twist.angular.z = th * turn
-            pub.publish(twist_msg)
+                if stamped:
+                    twist_msg.header.stamp = node.get_clock().now().to_msg()
+
+                twist.linear.x = x * speed
+                twist.linear.y = y * speed
+                twist.linear.z = z * speed
+                twist.angular.x = 0.0
+                twist.angular.y = 0.0
+                twist.angular.z = th * turn
+                pub.publish(twist_msg)
+                start = time.time()
 
     except Exception as e:
         print(e)

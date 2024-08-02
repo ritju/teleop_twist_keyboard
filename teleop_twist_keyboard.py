@@ -31,22 +31,16 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-import sys
-
-import geometry_msgs.msg
 import rclpy
-import threading
-import time
-if sys.platform == 'win32':
-    import msvcrt
-else:
-    import termios
-    import tty
 
+from geometry_msgs.msg import Twist
+
+import sys, select, termios, tty
+from rclpy.qos import DurabilityPolicy,ReliabilityPolicy,QoSProfile,HistoryPolicy
+settings = termios.tcgetattr(sys.stdin)
 
 msg = """
-This node takes keypresses from the keyboard and publishes them
-as Twist/TwistStamped messages. It works best with a US keyboard layout.
+Reading from the keyboard  and Publishing to Twist!
 ---------------------------
 Moving around:
    u    i    o
@@ -72,163 +66,143 @@ CTRL-C to quit
 """
 
 moveBindings = {
-    'i': (1, 0, 0, 0),
-    'o': (1, 0, 0, -1),
-    'j': (0, 0, 0, 1),
-    'l': (0, 0, 0, -1),
-    'u': (1, 0, 0, 1),
-    ',': (-1, 0, 0, 0),
-    '.': (-1, 0, 0, 1),
-    'm': (-1, 0, 0, -1),
-    'O': (1, -1, 0, 0),
-    'I': (1, 0, 0, 0),
-    'J': (0, 1, 0, 0),
-    'L': (0, -1, 0, 0),
-    'U': (1, 1, 0, 0),
-    '<': (-1, 0, 0, 0),
-    '>': (-1, -1, 0, 0),
-    'M': (-1, 1, 0, 0),
-    't': (0, 0, 1, 0),
-    'b': (0, 0, -1, 0),
-}
+		'i':(1,0,0,0),
+		'o':(1,0,0,-1),
+		'j':(0,0,0,1),
+		'l':(0,0,0,-1),
+		'u':(1,0,0,1),
+		',':(-1,0,0,0),
+		'.':(-1,0,0,1),
+		'm':(-1,0,0,-1),
+		'O':(1,-1,0,0),
+		'I':(1,0,0,0),
+		'J':(0,1,0,0),
+		'L':(0,-1,0,0),
+		'U':(1,1,0,0),
+		'<':(-1,0,0,0),
+		'>':(-1,-1,0,0),
+		'M':(-1,1,0,0),
+		't':(0,0,1,0),
+		'b':(0,0,-1,0),
+	       }
 
-speedBindings = {
-    'q': (1.1, 1.1),
-    'z': (.9, .9),
-    'w': (1.1, 1),
-    'x': (.9, 1),
-    'e': (1, 1.1),
-    'c': (1, .9),
-}
+speedBindings={
+		'q':(1.1,1.1),
+		'z':(.9,.9),
+		'w':(1.1,1),
+		'x':(.9,1),
+		'e':(1,1.1),
+		'c':(1,.9),
+	      }
 
 
-def getKey(settings):
-    if sys.platform == 'win32':
-        # getwch() returns a string on Windows
-        key = msvcrt.getwch()
-    else:
-        tty.setraw(sys.stdin.fileno())
-        # sys.stdin.read() returns a string on Linux
+def getKey():
+    tty.setraw(sys.stdin.fileno())
+    rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+    if rlist:
         key = sys.stdin.read(1)
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    else:
+        key = ''
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
     return key
 
-
-def saveTerminalSettings():
-    if sys.platform == 'win32':
-        return None
-    return termios.tcgetattr(sys.stdin)
-
-
-def restoreTerminalSettings(old_settings):
-    if sys.platform == 'win32':
-        return
-    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-
-
 def vels(speed, turn):
-    return 'currently:\tspeed %s\tturn %s ' % (speed, turn)
+    return "currently:\tspeed %s\tturn %s " % (speed, turn)
 
-
-def main():
-    settings = saveTerminalSettings()
-
-    rclpy.init()
-
-    node = rclpy.create_node('teleop_twist_keyboard')
-
-    # parameters
-    stamped = node.declare_parameter('stamped', False).value
-    frame_id = node.declare_parameter('frame_id', '').value
-    if not stamped and frame_id:
-        raise Exception("'frame_id' can only be set when 'stamped' is True")
-
-    if stamped:
-        TwistMsg = geometry_msgs.msg.TwistStamped
-    else:
-        TwistMsg = geometry_msgs.msg.Twist
-
-    pub = node.create_publisher(TwistMsg, 'cmd_vel', 10)
-
-    spinner = threading.Thread(target=rclpy.spin, args=(node,))
-    spinner.start()
+def main(args=None):
+    rclpy.init(args=args)
+    node = rclpy.create_node('teleop_twist_keyboard_continuous')
+    qos = QoSProfile(depth=10)
+    qos.reliability = ReliabilityPolicy.RELIABLE
+    qos.history = HistoryPolicy.KEEP_LAST
+    qos.durability = DurabilityPolicy.VOLATILE
+    pub = node.create_publisher(Twist, 'cmd_vel', qos)
 
     speed = 0.3
-    turn = 0.4
-    x = 0.0
-    y = 0.0
-    z = 0.0
-    th = 0.0
-    status = 0.0
-
-    twist_msg = TwistMsg()
-
-    if stamped:
-        twist = twist_msg.twist
-        twist_msg.header.stamp = node.get_clock().now().to_msg()
-        twist_msg.header.frame_id = frame_id
-    else:
-        twist = twist_msg
+    turn = 0.5
+    x = 0
+    y = 0
+    z = 0
+    th = 0
+    status = 0
+    moving = False
+    stop_published = False
 
     try:
         print(msg)
         print(vels(speed, turn))
-        start = time.time()
+        
+        # # Publish an initial zero Twist message
+        # twist = Twist()
+        # twist.linear.x = 0.0
+        # twist.linear.y = 0.0
+        # twist.linear.z = 0.0
+        # twist.angular.x = 0.0
+        # twist.angular.y = 0.0
+        # twist.angular.z = 0.0
+        # pub.publish(twist)
+        
         while True:
-            key = getKey(settings)
+            key = getKey()
             if key in moveBindings.keys():
                 x = moveBindings[key][0]
                 y = moveBindings[key][1]
                 z = moveBindings[key][2]
                 th = moveBindings[key][3]
+                moving = True
+                stop_published = False
             elif key in speedBindings.keys():
                 speed = speed * speedBindings[key][0]
                 turn = turn * speedBindings[key][1]
-
                 print(vels(speed, turn))
-                if (status == 14):
+                if status == 14:
                     print(msg)
                 status = (status + 1) % 15
             else:
-                x = 0.0
-                y = 0.0
-                z = 0.0
-                th = 0.0
-                if (key == '\x03'):
+                if key == '':
+                    pass  # No key was pressed, keep moving in the current direction
+                else:
+                    x = 0
+                    y = 0
+                    z = 0
+                    th = 0
+                    moving = False
+                    if not stop_published:
+                        twist = Twist()
+                        twist.linear.x = 0.0
+                        twist.linear.y = 0.0
+                        twist.linear.z = 0.0
+                        twist.angular.x = 0.0
+                        twist.angular.y = 0.0
+                        twist.angular.z = 0.0
+                        pub.publish(twist)
+                        stop_published = True
+                if key == '\x03':  # CTRL-C
                     break
 
-            if (time.time() - start > 0.09):
-
-                if stamped:
-                    twist_msg.header.stamp = node.get_clock().now().to_msg()
-
+            if moving:
+                twist = Twist()
                 twist.linear.x = x * speed
                 twist.linear.y = y * speed
                 twist.linear.z = z * speed
                 twist.angular.x = 0.0
                 twist.angular.y = 0.0
                 twist.angular.z = th * turn
-                pub.publish(twist_msg)
-                start = time.time()
+                pub.publish(twist)
 
     except Exception as e:
         print(e)
 
     finally:
-        if stamped:
-            twist_msg.header.stamp = node.get_clock().now().to_msg()
-
+        twist = Twist()
         twist.linear.x = 0.0
         twist.linear.y = 0.0
         twist.linear.z = 0.0
         twist.angular.x = 0.0
         twist.angular.y = 0.0
         twist.angular.z = 0.0
-        pub.publish(twist_msg)
-        rclpy.shutdown()
-        spinner.join()
-
-        restoreTerminalSettings(settings)
+        pub.publish(twist)
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
 
 if __name__ == '__main__':
